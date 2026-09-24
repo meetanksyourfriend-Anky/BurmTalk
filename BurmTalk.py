@@ -26,7 +26,6 @@ HTML_TEMPLATE = """
 <head>
     <title>Dear Leona - Translator</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <!-- Google Fonts for perfect Myanmar Script rendering AND Cursive text -->
     <link href="https://fonts.googleapis.com/css2?family=Dancing+Script:wght@700&family=Padauk:wght@400;700&family=Noto+Sans+Myanmar:wght@400;700&display=swap" rel="stylesheet">
     
     <style>
@@ -134,7 +133,7 @@ HTML_TEMPLATE = """
 
             try {
                 const controller = new AbortController();
-                // CRITICAL FIX: Increased timeout to 60 seconds so Render has time to wake up!
+                // Extended timeout to allow Render time to wake up without failing
                 const timeoutId = setTimeout(() => controller.abort(), 60000); 
 
                 const response = await fetch('/translate', {
@@ -242,31 +241,36 @@ def direct_translate(text):
 
     if clean_text in safety_net: return safety_net[clean_text]
 
-    # Quad-Engine System: Now featuring the Chrome Extension Bypass and browser disguises
+    # THE VIP FIX: MyMemory restricts free cloud servers, but gives 50,000 words/day 
+    # to ANY valid email address. This completely bypasses the IP block!
+    email_bypass = "leona.gift.app@gmail.com"
+    
     engines = [
-        ("Chrome Ext", f"https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=en&tl=my&q={urllib.parse.quote(text)}"),
-        ("Google Direct", f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=my&dt=t&q={urllib.parse.quote(text)}"),
-        ("Lingva Proxy 1", f"https://lingva.ml/api/v1/en/my/{urllib.parse.quote(text)}"),
-        ("Lingva Proxy 2", f"https://translate.fedilab.app/api/v1/en/my/{urllib.parse.quote(text)}")
+        ("MyMemory VIP", f"https://api.mymemory.translated.net/get?q={urllib.parse.quote(text)}&langpair=en|my&de={email_bypass}"),
+        ("Google Chrome Ext", f"https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=en&tl=my&q={urllib.parse.quote(text)}"),
+        ("Lingva Core", f"https://lingva.thedesk.top/api/v1/en/my/{urllib.parse.quote(text)}")
     ]
+    
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
     
     for name, url in engines:
         try:
             print(f"--> Trying {name}...")
-            # We add a full Chrome User-Agent string so the server doesn't look like a bot
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'})
+            req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=5.0) as response:
                 data = json.loads(response.read().decode('utf-8'))
-                if "clients5" in url:
+                
+                if "mymemory" in url:
+                    if data.get('responseStatus') == 200: 
+                        return data['responseData']['translatedText']
+                elif "clients5" in url:
                     if isinstance(data, list) and len(data) > 0:
                         if isinstance(data[0], str): return "".join(data)
                         elif isinstance(data[0], list): return "".join([s[0] for s in data[0] if s[0]])
-                elif "googleapis" in url:
-                    return "".join([sentence[0] for sentence in data[0] if sentence[0]])
-                elif "lingva" in url or "fedilab" in url:
+                elif "lingva" in url:
                     if "text" in data: return data["text"]
         except Exception as e:
-            print(f"--> {name} failed.")
+            print(f"--> {name} failed: {e}")
             
     raise Exception("All translation engines blocked.")
 
@@ -288,7 +292,8 @@ def get_phonetics(burmese_text):
     print(f"--> [2/3] Generating phonetics...")
     try:
         url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=my&tl=my&dt=t&dt=rm&q={urllib.parse.quote(burmese_text)}"
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'})
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+        req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=5.0) as response:
             data = json.loads(response.read().decode('utf-8'))
             def extract_latin(obj):
@@ -306,7 +311,8 @@ def get_phonetics(burmese_text):
             if data and isinstance(data, list) and len(data) > 0:
                 phonetics = extract_latin(data[0])
                 if phonetics: return smooth_phonetics(phonetics)
-    except Exception: pass
+    except Exception as e:
+        print(f"--> Phonetics failed: {e}")
     return ""
 
 def generate_neural_audio(text):

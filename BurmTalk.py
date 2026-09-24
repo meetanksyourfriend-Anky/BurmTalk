@@ -16,7 +16,7 @@ if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 # Safety timeout to prevent the server from getting permanently stuck
-socket.setdefaulttimeout(3.0)
+socket.setdefaulttimeout(5.0)
 
 app = Flask(__name__)
 
@@ -180,7 +180,7 @@ HTML_TEMPLATE = """
         /* The signature footer style */
         .footer-signature {
             font-family: 'Dancing Script', cursive;
-            color: #dc3545; /* Soft Red */
+            color: #dc3545;
             font-size: 32px;
             text-align: center;
             margin-top: 30px;
@@ -271,7 +271,7 @@ HTML_TEMPLATE = """
             loading.style.display = 'block';
             output.style.display = 'none';
             errorMsg.style.display = 'none';
-            audioPlayer.style.display = 'none'; // Hide audio player initially
+            audioPlayer.style.display = 'none'; // Hide audio initially
             saveBtn.innerHTML = "⭐ Save to Offline Phrasebook";
             saveBtn.disabled = false;
 
@@ -295,7 +295,7 @@ HTML_TEMPLATE = """
                     
                     if (data.audio_base64) {
                         audioPlayer.src = "data:audio/mp3;base64," + data.audio_base64;
-                        audioPlayer.style.display = 'block'; // Show only if audio succeeded
+                        audioPlayer.style.display = 'block'; // Only show player if audio exists
                         audioPlayer.play().catch(e => console.log("Autoplay blocked."));
                     }
                     
@@ -313,7 +313,7 @@ HTML_TEMPLATE = """
                     errorMsg.style.display = 'block';
                 }
             } catch (err) {
-                errorMsg.innerText = "Connection error. Ensure the server is running.";
+                errorMsg.innerText = "Connection error. Please try again.";
                 errorMsg.style.display = 'block';
             } finally {
                 btn.disabled = false;
@@ -347,7 +347,6 @@ HTML_TEMPLATE = """
                 const card = document.createElement('div');
                 card.className = 'saved-item';
                 
-                // Hide audio player if no audio was saved
                 let audioHtml = item.audio ? `<audio controls src="data:audio/mp3;base64,${item.audio}" style="width: 100%; margin-top: 10px;"></audio>` : '';
                 let phoneticsHtml = item.phonetics ? `<div class="phonetics-text">🗣️ ${item.phonetics}</div>` : '';
 
@@ -380,8 +379,8 @@ def direct_translate(text):
     
     clean_text = text.strip().lower().replace("?", "").replace("!", "").replace(".", "")
     safety_net = {
-        "hello": "မင်္ဂလာပါ", # Mingalaba
-        "thank you": "ကျေးဇူးတင်ပါတယ်", # Kyezu tin ba de
+        "hello": "မင်္ဂလာပါ", 
+        "thank you": "ကျေးဇူးတင်ပါတယ်",
         "thanks": "ကျေးဇူးတင်ပါတယ်",
         "goodbye": "သွားပါဦးမယ်",
         "bye": "သွားပါဦးမယ်"
@@ -391,14 +390,31 @@ def direct_translate(text):
         print("--> [1/3] SUCCESS! (Used Safety Net)")
         return safety_net[clean_text]
 
-    url = f"https://api.mymemory.translated.net/get?q={urllib.parse.quote(text)}&langpair=en|my"
-    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-    
-    with urllib.request.urlopen(req, timeout=4.0) as response:
-        data = json.loads(response.read().decode('utf-8'))
-        result = data['responseData']['translatedText']
-        print(f"--> [1/3] SUCCESS!")
-        return result
+    # PRIMARY ENGINE: Google Translate (Much more resilient to Cloud IPs)
+    try:
+        url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=my&dt=t&q={urllib.parse.quote(text)}"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=5.0) as response:
+            data = json.loads(response.read().decode('utf-8'))
+            result = "".join([sentence[0] for sentence in data[0] if sentence[0]])
+            print("--> [1/3] SUCCESS! (Used Google Engine)")
+            return result
+    except Exception as e:
+        print(f"--> [1/3] Google Engine failed: {e}")
+
+    # BACKUP ENGINE: MyMemory 
+    try:
+        url = f"https://api.mymemory.translated.net/get?q={urllib.parse.quote(text)}&langpair=en|my"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=5.0) as response:
+            data = json.loads(response.read().decode('utf-8'))
+            if 'responseData' in data and 'translatedText' in data['responseData']:
+                print("--> [1/3] SUCCESS! (Used MyMemory Backup)")
+                return data['responseData']['translatedText']
+    except Exception as e:
+        print(f"--> [1/3] MyMemory Engine failed: {e}")
+
+    raise Exception("All translation engines blocked.")
 
 def smooth_phonetics(raw_text):
     if not raw_text: return ""
@@ -416,18 +432,9 @@ def smooth_phonetics(raw_text):
         ("barsar", "bar-thar"),
         ("hcakar", "sa-garr"),
         ("mingalar", "min-ga-la"),
-        ("bh", "b"),
-        ("mh", "m"),
-        ("dh", "d"),
-        ("gh", "g"),
-        ("jh", "z"),
-        ("hc", "s"),
-        ("rr", "r"),
-        ("ll", "l"),
-        ("aou", "ou"),
-        ("hk", "k"),
-        ("ky", "ky"),  
-        ("kr", "ky"), 
+        ("bh", "b"), ("mh", "m"), ("dh", "d"), ("gh", "g"), 
+        ("jh", "z"), ("hc", "s"), ("rr", "r"), ("ll", "l"), 
+        ("aou", "ou"), ("hk", "k"), ("ky", "ky"), ("kr", "ky")
     ]
     
     for old, new in mapping:
@@ -441,7 +448,7 @@ def get_phonetics(burmese_text):
     try:
         url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=my&tl=my&dt=t&dt=rm&q={urllib.parse.quote(burmese_text)}"
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=4.0) as response:
+        with urllib.request.urlopen(req, timeout=5.0) as response:
             data = json.loads(response.read().decode('utf-8'))
             
             def extract_latin_phonetics(obj):
@@ -479,7 +486,7 @@ def generate_neural_audio(text):
             communicate = edge_tts.Communicate(text, "my-MM-NilarNeural")
             await communicate.save(temp_path)
             
-        # Linux/Render safe way to run async code inside a Flask thread
+        # VERY IMPORTANT FIX FOR RENDER: Forces a fresh event loop on Linux threads
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:

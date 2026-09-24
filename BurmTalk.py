@@ -117,7 +117,7 @@ HTML_TEMPLATE = """
         button.primary-btn:disabled { background: #a5cbf5; cursor: not-allowed; }
         
         .output { background: #f8f9fa; padding: 15px; margin-top: 20px; border-radius: 8px; display: none; border: 1px solid #e9ecef;}
-        audio { width: 100%; margin-top: 10px; height: 40px; }
+        audio { width: 100%; margin-top: 10px; height: 40px; display: none; }
         
         #loading { display: none; text-align: center; margin-top: 20px; font-style: italic; color: #666; }
         .error { color: #dc3545; margin-top: 15px; font-weight: bold; text-align: center; display: none;}
@@ -190,7 +190,6 @@ HTML_TEMPLATE = """
     </style>
 </head>
 <body>
-    <!-- Header customized for her -->
     <div class="header">Dear Leona</div>
     
     <div class="container">
@@ -272,6 +271,7 @@ HTML_TEMPLATE = """
             loading.style.display = 'block';
             output.style.display = 'none';
             errorMsg.style.display = 'none';
+            audioPlayer.style.display = 'none'; // Hide audio player initially
             saveBtn.innerHTML = "⭐ Save to Offline Phrasebook";
             saveBtn.disabled = false;
 
@@ -295,6 +295,7 @@ HTML_TEMPLATE = """
                     
                     if (data.audio_base64) {
                         audioPlayer.src = "data:audio/mp3;base64," + data.audio_base64;
+                        audioPlayer.style.display = 'block'; // Show only if audio succeeded
                         audioPlayer.play().catch(e => console.log("Autoplay blocked."));
                     }
                     
@@ -346,7 +347,8 @@ HTML_TEMPLATE = """
                 const card = document.createElement('div');
                 card.className = 'saved-item';
                 
-                let audioHtml = item.audio ? `<audio controls src="data:audio/mp3;base64,${item.audio}"></audio>` : '';
+                // Hide audio player if no audio was saved
+                let audioHtml = item.audio ? `<audio controls src="data:audio/mp3;base64,${item.audio}" style="width: 100%; margin-top: 10px;"></audio>` : '';
                 let phoneticsHtml = item.phonetics ? `<div class="phonetics-text">🗣️ ${item.phonetics}</div>` : '';
 
                 card.innerHTML = `
@@ -375,6 +377,20 @@ HTML_TEMPLATE = """
 
 def direct_translate(text):
     print(f"--> [1/3] Translating text: '{text}'")
+    
+    clean_text = text.strip().lower().replace("?", "").replace("!", "").replace(".", "")
+    safety_net = {
+        "hello": "မင်္ဂလာပါ", # Mingalaba
+        "thank you": "ကျေးဇူးတင်ပါတယ်", # Kyezu tin ba de
+        "thanks": "ကျေးဇူးတင်ပါတယ်",
+        "goodbye": "သွားပါဦးမယ်",
+        "bye": "သွားပါဦးမယ်"
+    }
+
+    if clean_text in safety_net:
+        print("--> [1/3] SUCCESS! (Used Safety Net)")
+        return safety_net[clean_text]
+
     url = f"https://api.mymemory.translated.net/get?q={urllib.parse.quote(text)}&langpair=en|my"
     req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
     
@@ -388,7 +404,7 @@ def smooth_phonetics(raw_text):
     if not raw_text: return ""
     text = raw_text.lower()
     
-    spaced_text = re.sub(r'(barsar|hcakar|ko|sai|nyuu|nay|par|mhar|lell|bhaal|lout)', r' \1 ', text)
+    spaced_text = re.sub(r'(barsar|hcakar|ko|sai|nyuu|nay|par|mhar|lell|bhaal|lout|mingalar)', r' \1 ', text)
     
     mapping = [
         ("ngarr", "ngar"),
@@ -399,6 +415,7 @@ def smooth_phonetics(raw_text):
         ("myanmar", "myan-mar"),
         ("barsar", "bar-thar"),
         ("hcakar", "sa-garr"),
+        ("mingalar", "min-ga-la"),
         ("bh", "b"),
         ("mh", "m"),
         ("dh", "d"),
@@ -462,8 +479,14 @@ def generate_neural_audio(text):
             communicate = edge_tts.Communicate(text, "my-MM-NilarNeural")
             await communicate.save(temp_path)
             
-        asyncio.run(_generate())
-        
+        # Linux/Render safe way to run async code inside a Flask thread
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(_generate())
+        finally:
+            loop.close()
+            
         with open(temp_path, "rb") as f:
             data = f.read()
         print("--> [3/3] SUCCESS!")
@@ -484,32 +507,18 @@ def translate():
         if not text.strip():
             return jsonify({"error": "No text provided"}), 400
 
-        # The Upgraded Safety Net: Forces BOTH perfect Translation and perfect Phonetics
-        clean_text = text.strip().lower().replace("?", "").replace("!", "").replace(".", "")
-        safety_net = {
-            "hello": {"burmese": "မင်္ဂလာပါ", "phonetics": "Min-ga-la-ba"},
-            "thank you": {"burmese": "ကျေးဇူးတင်ပါတယ်", "phonetics": "Kyezu tin ba de"},
-            "thanks": {"burmese": "ကျေးဇူးတင်ပါတယ်", "phonetics": "Kyezu tin ba de"},
-            "goodbye": {"burmese": "သွားပါဦးမယ်", "phonetics": "Thwa ba ohn me"},
-            "bye": {"burmese": "သွားပါဦးမယ်", "phonetics": "Thwa ba ohn me"}
-        }
-
-        if clean_text in safety_net:
-            translation = safety_net[clean_text]["burmese"]
-            phonetics = safety_net[clean_text]["phonetics"]
-            print(f"--> [1&2] SUCCESS! (Used Safety Net for '{clean_text}')")
-        else:
-            try:
-                translation = direct_translate(text)
-            except Exception as e:
-                return jsonify({"error": "Translation service failed."}), 500
-            phonetics = get_phonetics(translation)
+        try:
+            translation = direct_translate(text)
+        except Exception as e:
+            return jsonify({"error": "Translation service failed."}), 500
+            
+        phonetics = get_phonetics(translation)
         
         audio_base64 = ""
         try:
             audio_base64 = generate_neural_audio(translation)
         except Exception as e:
-            pass
+            print(f"--> [3/3] ERROR generating audio: {e}")
             
         return jsonify({
             "translation": translation,

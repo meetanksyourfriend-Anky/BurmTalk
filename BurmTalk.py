@@ -2,13 +2,9 @@ from flask import Flask, render_template_string, request, jsonify
 import base64
 import os
 import sys
-import asyncio
-import edge_tts
 import tempfile
-
-# Windows Fix: Prevents asyncio from crashing when testing locally
-if sys.platform == 'win32':
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+import subprocess
+import urllib.parse
 
 app = Flask(__name__)
 
@@ -92,7 +88,7 @@ HTML_TEMPLATE = """
             if(tabId === 'phrasebook') renderPhrasebook();
         }
 
-        // The Custom Phonetic Smoother (Now running right in her browser!)
+        // Custom Phonetic Smoother 
         function smoothPhonetics(rawText) {
             if (!rawText) return "";
             let text = rawText.toLowerCase();
@@ -111,8 +107,10 @@ HTML_TEMPLATE = """
 
         function extractLatin(obj) {
             if (typeof obj === 'string') {
-                if (/[a-zA-Z]/.test(obj) && !/[\u1000-\u109F]/.test(obj) && !['my','en'].includes(obj.trim().toLowerCase())) {
-                    return obj.trim();
+                const str = obj.trim();
+                // Extract only if it has english letters, NO burmese letters, and isn't a language code
+                if (/[a-zA-Z]/.test(str) && !/[\u1000-\u109F]/.test(str) && !['my','en'].includes(str.toLowerCase())) {
+                    return str;
                 }
             } else if (Array.isArray(obj)) {
                 for (let item of obj) {
@@ -141,7 +139,6 @@ HTML_TEMPLATE = """
             let finalBurmese = "";
             let finalPhonetics = "";
             
-            // 1. Safety Net (Instant Bypass)
             const cleanText = text.toLowerCase().replace(/[.?!]/g, '').trim();
             const safetyNet = { "hello": ["မင်္ဂလာပါ", "Min-ga-la-ba"], "thank you": ["ကျေးဇူးတင်ပါတယ်", "Kye-zu tin bar de"], "thanks": ["ကျေးဇူးတင်ပါတယ်", "Kye-zu tin bar de"], "goodbye": ["သွားပါဦးမယ်", "Thwa bar ou me"], "bye": ["သွားပါဦးမယ်", "Thwa bar ou me"] };
 
@@ -150,14 +147,20 @@ HTML_TEMPLATE = """
                     finalBurmese = safetyNet[cleanText][0];
                     finalPhonetics = safetyNet[cleanText][1];
                 } else {
-                    // 2. Client-Side Translation (Google API directly from Phone)
-                    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=my&dt=t&dt=rm&q=${encodeURIComponent(text)}`;
-                    const res = await fetch(url);
-                    const data = await res.json();
+                    // Fetch 1: Translate English to Burmese
+                    const url1 = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=my&dt=t&q=${encodeURIComponent(text)}`;
+                    const res1 = await fetch(url1);
+                    const data1 = await res1.json();
                     
-                    if (data && data[0]) {
-                        finalBurmese = data[0][0][0];
-                        const rawPhonetics = extractLatin(data[0]);
+                    if (data1 && data1[0]) {
+                        finalBurmese = data1[0][0][0];
+                        
+                        // Fetch 2: Isolate the phonetics by requesting the romanization of the Burmese text
+                        const url2 = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=my&tl=my&dt=rm&q=${encodeURIComponent(finalBurmese)}`;
+                        const res2 = await fetch(url2);
+                        const data2 = await res2.json();
+                        
+                        const rawPhonetics = extractLatin(data2[0]);
                         finalPhonetics = smoothPhonetics(rawPhonetics);
                     } else {
                         throw new Error("Translation data missing");
@@ -168,7 +171,7 @@ HTML_TEMPLATE = """
                 document.getElementById('phonetics-text').innerText = finalPhonetics ? "🗣️ " + finalPhonetics : "";
                 output.style.display = 'block';
 
-                // 3. Fetch Neural Audio from Render (Audio generation is NOT blocked by IPs)
+                // Fetch 3: Generate Neural Audio safely via Render
                 const audioRes = await fetch('/generate_audio', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -259,14 +262,15 @@ def generate_audio():
     temp_file.close()
 
     try:
-        async def _generate():
-            communicate = edge_tts.Communicate(text, "my-MM-NilarNeural")
-            await communicate.save(temp_path)
-        
-        asyncio.run(_generate())
+        # Thread-safe execution perfectly suited for Render's environment
+        subprocess.run(
+            [sys.executable, "-m", "edge_tts", "--voice", "my-MM-NilarNeural", "--text", text, "--write-media", temp_path], 
+            check=True
+        )
         
         with open(temp_path, "rb") as f:
             audio_bytes = f.read()
+            
         return jsonify({"audio_base64": base64.b64encode(audio_bytes).decode('utf-8')})
     except Exception as e:
         return jsonify({"error": str(e)}), 500

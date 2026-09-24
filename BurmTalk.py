@@ -15,8 +15,8 @@ import re
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-# Safety timeout to prevent the server from getting permanently stuck
-socket.setdefaulttimeout(5.0)
+# Safety timeout
+socket.setdefaulttimeout(4.0)
 
 app = Flask(__name__)
 
@@ -26,185 +26,51 @@ HTML_TEMPLATE = """
 <head>
     <title>Dear Leona - Translator</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <!-- Google Fonts for perfect Myanmar Script rendering AND Cursive text -->
     <link href="https://fonts.googleapis.com/css2?family=Dancing+Script:wght@700&family=Padauk:wght@400;700&family=Noto+Sans+Myanmar:wght@400;700&display=swap" rel="stylesheet">
     
     <style>
-        body { 
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; 
-            padding: 0; 
-            margin: 0; 
-            background: #f4f6f8; 
-            color: #333;
-        }
-        .header {
-            background: linear-gradient(135deg, #007bff, #0056b3);
-            color: white;
-            padding: 15px 20px;
-            text-align: center;
-            font-size: 22px;
-            font-weight: bold;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.15);
-            letter-spacing: 0.5px;
-        }
-        .container {
-            max-width: 500px; 
-            margin: 20px auto; 
-            padding: 0 15px;
-        }
-        
-        .tabs {
-            display: flex;
-            margin-bottom: 20px;
-            background: white;
-            border-radius: 8px;
-            overflow: hidden;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-        }
-        .tab-btn {
-            flex: 1;
-            padding: 12px;
-            border: none;
-            background: #fff;
-            color: #555;
-            font-size: 16px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: 0.2s;
-        }
-        .tab-btn.active {
-            background: #e9ecef;
-            color: #007bff;
-            border-bottom: 3px solid #007bff;
-        }
-        .tab-content {
-            display: none;
-            animation: fadeIn 0.3s;
-        }
-        .tab-content.active {
-            display: block;
-        }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 0; margin: 0; background: #f4f6f8; color: #333; }
+        .header { background: linear-gradient(135deg, #007bff, #0056b3); color: white; padding: 15px 20px; text-align: center; font-size: 22px; font-weight: bold; box-shadow: 0 2px 4px rgba(0,0,0,0.15); letter-spacing: 0.5px; }
+        .container { max-width: 500px; margin: 20px auto; padding: 0 15px; }
+        .tabs { display: flex; margin-bottom: 20px; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        .tab-btn { flex: 1; padding: 12px; border: none; background: #fff; color: #555; font-size: 16px; font-weight: 600; cursor: pointer; transition: 0.2s; }
+        .tab-btn.active { background: #e9ecef; color: #007bff; border-bottom: 3px solid #007bff; }
+        .tab-content { display: none; animation: fadeIn 0.3s; }
+        .tab-content.active { display: block; }
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-
-        .card { 
-            background: white; 
-            padding: 20px; 
-            border-radius: 8px; 
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1); 
-        }
-        input[type="text"] { 
-            width: 100%; 
-            padding: 12px; 
-            margin: 10px 0 15px; 
-            box-sizing: border-box; 
-            font-size: 16px; 
-            border: 1px solid #ddd; 
-            border-radius: 6px; 
-        }
-        button.primary-btn { 
-            background: #007bff; 
-            color: white; 
-            border: none; 
-            padding: 14px 20px; 
-            border-radius: 6px; 
-            cursor: pointer; 
-            width: 100%; 
-            font-size: 16px; 
-            font-weight: bold; 
-            transition: 0.2s;
-        }
+        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+        input[type="text"] { width: 100%; padding: 12px; margin: 10px 0 15px; box-sizing: border-box; font-size: 16px; border: 1px solid #ddd; border-radius: 6px; }
+        button.primary-btn { background: #007bff; color: white; border: none; padding: 14px 20px; border-radius: 6px; cursor: pointer; width: 100%; font-size: 16px; font-weight: bold; transition: 0.2s; }
         button.primary-btn:hover { background: #0056b3; }
         button.primary-btn:disabled { background: #a5cbf5; cursor: not-allowed; }
-        
         .output { background: #f8f9fa; padding: 15px; margin-top: 20px; border-radius: 8px; display: none; border: 1px solid #e9ecef;}
         audio { width: 100%; margin-top: 10px; height: 40px; display: none; }
-        
         #loading { display: none; text-align: center; margin-top: 20px; font-style: italic; color: #666; }
         .error { color: #dc3545; margin-top: 15px; font-weight: bold; text-align: center; display: none;}
-        
-        .burmese-text {
-            font-family: 'Padauk', 'Noto Sans Myanmar', sans-serif;
-            font-size: 28px; 
-            color: #111; 
-            margin: 10px 0;
-            line-height: 1.5;
-        }
-        .phonetics-text {
-            color: #0056b3;
-            font-size: 18px;
-            margin-bottom: 15px;
-            font-weight: 500;
-        }
-        
-        .save-btn {
-            background: #ffc107;
-            color: #333;
-            border: none;
-            padding: 10px 15px;
-            border-radius: 6px;
-            cursor: pointer;
-            font-weight: bold;
-            width: 100%;
-            margin-top: 15px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
-            font-size: 15px;
-        }
+        .burmese-text { font-family: 'Padauk', 'Noto Sans Myanmar', sans-serif; font-size: 28px; color: #111; margin: 10px 0; line-height: 1.5; }
+        .phonetics-text { color: #0056b3; font-size: 18px; margin-bottom: 15px; font-weight: 500; }
+        .save-btn { background: #ffc107; color: #333; border: none; padding: 10px 15px; border-radius: 6px; cursor: pointer; font-weight: bold; width: 100%; margin-top: 15px; display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 15px; }
         .save-btn:hover { background: #e0a800; }
-        
-        .saved-item {
-            background: white;
-            border: 1px solid #ddd;
-            padding: 15px;
-            border-radius: 8px;
-            margin-bottom: 15px;
-            position: relative;
-        }
+        .saved-item { background: white; border: 1px solid #ddd; padding: 15px; border-radius: 8px; margin-bottom: 15px; position: relative; }
         .saved-english { font-weight: bold; font-size: 16px; color: #555; margin-bottom: 5px;}
-        .delete-btn {
-            position: absolute;
-            top: 10px;
-            right: 10px;
-            background: #dc3545;
-            color: white;
-            border: none;
-            border-radius: 4px;
-            padding: 5px 10px;
-            font-size: 12px;
-            cursor: pointer;
-        }
+        .delete-btn { position: absolute; top: 10px; right: 10px; background: #dc3545; color: white; border: none; border-radius: 4px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
         .empty-state { text-align: center; color: #777; padding: 30px 10px; font-style: italic; }
-        
-        /* The signature footer style */
-        .footer-signature {
-            font-family: 'Dancing Script', cursive;
-            color: #dc3545;
-            font-size: 32px;
-            text-align: center;
-            margin-top: 30px;
-            margin-bottom: 30px;
-            text-shadow: 1px 1px 2px rgba(0,0,0,0.05);
-        }
+        .footer-signature { font-family: 'Dancing Script', cursive; color: #dc3545; font-size: 32px; text-align: center; margin-top: 30px; margin-bottom: 30px; text-shadow: 1px 1px 2px rgba(0,0,0,0.05); }
     </style>
 </head>
 <body>
     <div class="header">Dear Leona</div>
-    
     <div class="container">
-        <!-- Tab Navigation -->
         <div class="tabs">
             <button class="tab-btn active" onclick="switchTab('translator')" id="tabBtn-translator">📡 Live Translator</button>
             <button class="tab-btn" onclick="switchTab('phrasebook')" id="tabBtn-phrasebook">⭐ Phrasebook</button>
         </div>
 
-        <!-- Live Translator Tab -->
         <div id="tab-translator" class="tab-content active">
             <div class="card">
                 <form id="translator-form">
                     <label>What do you want to say?</label>
-                    <input type="text" id="english_text" placeholder="e.g., Where is the restroom?" autocomplete="off" required>
+                    <input type="text" id="english_text" placeholder="e.g., Where is the taxi?" autocomplete="off" required>
                     <button type="submit" id="submit-btn" class="primary-btn">Translate</button>
                 </form>
 
@@ -215,22 +81,15 @@ HTML_TEMPLATE = """
                     <div class="burmese-text" id="burmese-text"></div>
                     <div class="phonetics-text" id="phonetics-text"></div>
                     <audio id="audio-player" controls></audio>
-                    
-                    <button class="save-btn" id="save-btn" onclick="saveCurrentTranslation()">
-                        ⭐ Save to Offline Phrasebook
-                    </button>
+                    <button class="save-btn" id="save-btn" onclick="saveCurrentTranslation()">⭐ Save to Offline Phrasebook</button>
                 </div>
             </div>
         </div>
 
-        <!-- Phrasebook Tab -->
         <div id="tab-phrasebook" class="tab-content">
-            <div id="phrasebook-list">
-                <!-- Saved items will be injected here by JavaScript -->
-            </div>
+            <div id="phrasebook-list"></div>
         </div>
         
-        <!-- Personalized Signature -->
         <div class="footer-signature">With love Anky</div>
     </div>
 
@@ -246,9 +105,7 @@ HTML_TEMPLATE = """
             document.getElementById('tab-phrasebook').classList.remove('active');
             document.getElementById('tab-' + tabId).classList.add('active');
 
-            if(tabId === 'phrasebook') {
-                renderPhrasebook();
-            }
+            if(tabId === 'phrasebook') renderPhrasebook();
         }
 
         document.getElementById('translator-form').addEventListener('submit', async function(e) {
@@ -259,7 +116,6 @@ HTML_TEMPLATE = """
             const loading = document.getElementById('loading');
             const output = document.getElementById('output-section');
             const errorMsg = document.getElementById('error-msg');
-            
             const burmeseText = document.getElementById('burmese-text');
             const phoneticsText = document.getElementById('phonetics-text');
             const audioPlayer = document.getElementById('audio-player');
@@ -271,13 +127,14 @@ HTML_TEMPLATE = """
             loading.style.display = 'block';
             output.style.display = 'none';
             errorMsg.style.display = 'none';
-            audioPlayer.style.display = 'none'; // Hide audio initially
+            audioPlayer.style.display = 'none';
             saveBtn.innerHTML = "⭐ Save to Offline Phrasebook";
             saveBtn.disabled = false;
 
             try {
                 const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 15000); 
+                // CRITICAL FIX: Increased timeout to 60 seconds so Render has time to wake up!
+                const timeoutId = setTimeout(() => controller.abort(), 60000); 
 
                 const response = await fetch('/translate', {
                     method: 'POST',
@@ -295,7 +152,7 @@ HTML_TEMPLATE = """
                     
                     if (data.audio_base64) {
                         audioPlayer.src = "data:audio/mp3;base64," + data.audio_base64;
-                        audioPlayer.style.display = 'block'; // Only show player if audio exists
+                        audioPlayer.style.display = 'block'; 
                         audioPlayer.play().catch(e => console.log("Autoplay blocked."));
                     }
                     
@@ -306,14 +163,13 @@ HTML_TEMPLATE = """
                         phonetics: data.phonetics,
                         audio: data.audio_base64
                     };
-
                     output.style.display = 'block';
                 } else {
-                    errorMsg.innerText = "Translation failed.";
+                    errorMsg.innerText = "Translation failed. Servers are too busy.";
                     errorMsg.style.display = 'block';
                 }
             } catch (err) {
-                errorMsg.innerText = "Connection error. Please try again.";
+                errorMsg.innerText = "Connection error. The server is waking up, try again in a few seconds!";
                 errorMsg.style.display = 'block';
             } finally {
                 btn.disabled = false;
@@ -337,7 +193,6 @@ HTML_TEMPLATE = """
             let savedItems = JSON.parse(localStorage.getItem('burmTalkSaved') || '[]');
             
             listContainer.innerHTML = ''; 
-            
             if (savedItems.length === 0) {
                 listContainer.innerHTML = '<div class="empty-state">Your phrasebook is empty.<br>Translate some phrases and click "Save" to add them here!</div>';
                 return;
@@ -346,7 +201,6 @@ HTML_TEMPLATE = """
             savedItems.forEach(item => {
                 const card = document.createElement('div');
                 card.className = 'saved-item';
-                
                 let audioHtml = item.audio ? `<audio controls src="data:audio/mp3;base64,${item.audio}" style="width: 100%; margin-top: 10px;"></audio>` : '';
                 let phoneticsHtml = item.phonetics ? `<div class="phonetics-text">🗣️ ${item.phonetics}</div>` : '';
 
@@ -376,7 +230,6 @@ HTML_TEMPLATE = """
 
 def direct_translate(text):
     print(f"--> [1/3] Translating text: '{text}'")
-    
     clean_text = text.strip().lower().replace("?", "").replace("!", "").replace(".", "")
     safety_net = {
         "hello": "မင်္ဂလာပါ", 
@@ -386,72 +239,56 @@ def direct_translate(text):
         "bye": "သွားပါဦးမယ်"
     }
 
-    if clean_text in safety_net:
-        print("--> [1/3] SUCCESS! (Used Safety Net)")
-        return safety_net[clean_text]
+    if clean_text in safety_net: return safety_net[clean_text]
 
-    # PRIMARY ENGINE: Google Translate (Much more resilient to Cloud IPs)
-    try:
-        url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=my&dt=t&q={urllib.parse.quote(text)}"
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=5.0) as response:
-            data = json.loads(response.read().decode('utf-8'))
-            result = "".join([sentence[0] for sentence in data[0] if sentence[0]])
-            print("--> [1/3] SUCCESS! (Used Google Engine)")
-            return result
-    except Exception as e:
-        print(f"--> [1/3] Google Engine failed: {e}")
-
-    # BACKUP ENGINE: MyMemory 
-    try:
-        url = f"https://api.mymemory.translated.net/get?q={urllib.parse.quote(text)}&langpair=en|my"
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=5.0) as response:
-            data = json.loads(response.read().decode('utf-8'))
-            if 'responseData' in data and 'translatedText' in data['responseData']:
-                print("--> [1/3] SUCCESS! (Used MyMemory Backup)")
-                return data['responseData']['translatedText']
-    except Exception as e:
-        print(f"--> [1/3] MyMemory Engine failed: {e}")
-
+    # Quad-Engine System: Tries 4 different open APIs to bypass Datacenter IP blocking.
+    engines = [
+        ("Lingva Proxy 1", f"https://lingva.ml/api/v1/en/my/{urllib.parse.quote(text)}"),
+        ("Lingva Proxy 2", f"https://translate.fedilab.app/api/v1/en/my/{urllib.parse.quote(text)}"),
+        ("Google Direct", f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=my&dt=t&q={urllib.parse.quote(text)}"),
+        ("MyMemory", f"https://api.mymemory.translated.net/get?q={urllib.parse.quote(text)}&langpair=en|my&de=leona.translator@gmail.com")
+    ]
+    
+    for name, url in engines:
+        try:
+            print(f"--> Trying {name}...")
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
+            with urllib.request.urlopen(req, timeout=4.0) as response:
+                data = json.loads(response.read().decode('utf-8'))
+                if "lingva" in url or "fedilab" in url:
+                    if "text" in data: return data["text"]
+                elif "googleapis" in url:
+                    return "".join([sentence[0] for sentence in data[0] if sentence[0]])
+                elif "mymemory" in url:
+                    if 'responseData' in data and 'translatedText' in data['responseData']:
+                        return data['responseData']['translatedText']
+        except Exception as e:
+            print(f"--> {name} failed.")
+            
     raise Exception("All translation engines blocked.")
 
 def smooth_phonetics(raw_text):
     if not raw_text: return ""
     text = raw_text.lower()
-    
     spaced_text = re.sub(r'(barsar|hcakar|ko|sai|nyuu|nay|par|mhar|lell|bhaal|lout|mingalar)', r' \1 ', text)
-    
     mapping = [
-        ("ngarr", "ngar"),
-        ("nhaith", "hnit"),
-        ("hkuk", "ku ga"),
-        ("kuk", "ku ga"),
-        ("de ", "dee "),
-        ("myanmar", "myan-mar"),
-        ("barsar", "bar-thar"),
-        ("hcakar", "sa-garr"),
-        ("mingalar", "min-ga-la"),
-        ("bh", "b"), ("mh", "m"), ("dh", "d"), ("gh", "g"), 
-        ("jh", "z"), ("hc", "s"), ("rr", "r"), ("ll", "l"), 
-        ("aou", "ou"), ("hk", "k"), ("ky", "ky"), ("kr", "ky")
+        ("ngarr", "ngar"), ("nhaith", "hnit"), ("hkuk", "ku ga"), ("kuk", "ku ga"),
+        ("de ", "dee "), ("myanmar", "myan-mar"), ("barsar", "bar-thar"),
+        ("hcakar", "sa-garr"), ("mingalar", "min-ga-la"), ("bh", "b"), ("mh", "m"),
+        ("dh", "d"), ("gh", "g"), ("jh", "z"), ("hc", "s"), ("rr", "r"),
+        ("ll", "l"), ("aou", "ou"), ("hk", "k"), ("ky", "ky"), ("kr", "ky")
     ]
-    
-    for old, new in mapping:
-        spaced_text = spaced_text.replace(old, new)
-        
-    spaced_text = re.sub(r'\s+', ' ', spaced_text).strip()
-    return spaced_text.capitalize()
+    for old, new in mapping: spaced_text = spaced_text.replace(old, new)
+    return re.sub(r'\s+', ' ', spaced_text).strip().capitalize()
 
 def get_phonetics(burmese_text):
     print(f"--> [2/3] Generating phonetics...")
     try:
         url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=my&tl=my&dt=t&dt=rm&q={urllib.parse.quote(burmese_text)}"
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=5.0) as response:
+        with urllib.request.urlopen(req, timeout=4.0) as response:
             data = json.loads(response.read().decode('utf-8'))
-            
-            def extract_latin_phonetics(obj):
+            def extract_latin(obj):
                 if isinstance(obj, str):
                     has_letters = any(c.isalpha() for c in obj)
                     has_burmese = any('\u1000' <= c <= '\u109f' for c in obj)
@@ -459,20 +296,14 @@ def get_phonetics(burmese_text):
                         return obj.strip().capitalize()
                 elif isinstance(obj, list):
                     for item in obj:
-                        res = extract_latin_phonetics(item)
+                        res = extract_latin(item)
                         if res: return res
                 return None
             
             if data and isinstance(data, list) and len(data) > 0:
-                phonetics = extract_latin_phonetics(data[0])
-                if phonetics:
-                    smoothed = smooth_phonetics(phonetics)
-                    print(f"--> [2/3] SUCCESS! Phonetics: {smoothed}")
-                    return smoothed
-                    
-        print("--> [2/3] FAILED: Phonetics not found.")
-    except Exception as e:
-        print(f"--> [2/3] ERROR: {e}")
+                phonetics = extract_latin(data[0])
+                if phonetics: return smooth_phonetics(phonetics)
+    except Exception: pass
     return ""
 
 def generate_neural_audio(text):
@@ -486,7 +317,7 @@ def generate_neural_audio(text):
             communicate = edge_tts.Communicate(text, "my-MM-NilarNeural")
             await communicate.save(temp_path)
             
-        # VERY IMPORTANT FIX FOR RENDER: Forces a fresh event loop on Linux threads
+        # Bulletproof execution for Linux servers (like Render)
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
@@ -494,13 +325,10 @@ def generate_neural_audio(text):
         finally:
             loop.close()
             
-        with open(temp_path, "rb") as f:
-            data = f.read()
-        print("--> [3/3] SUCCESS!")
+        with open(temp_path, "rb") as f: data = f.read()
         return base64.b64encode(data).decode('utf-8')
     finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
+        if os.path.exists(temp_path): os.remove(temp_path)
 
 @app.route("/", methods=["GET"]) 
 def index():
@@ -511,12 +339,11 @@ def translate():
     try:
         data = request.get_json()
         text = data.get("text", "")
-        if not text.strip():
-            return jsonify({"error": "No text provided"}), 400
+        if not text.strip(): return jsonify({"error": "No text provided"}), 400
 
         try:
             translation = direct_translate(text)
-        except Exception as e:
+        except Exception:
             return jsonify({"error": "Translation service failed."}), 500
             
         phonetics = get_phonetics(translation)
@@ -524,8 +351,8 @@ def translate():
         audio_base64 = ""
         try:
             audio_base64 = generate_neural_audio(translation)
-        except Exception as e:
-            print(f"--> [3/3] ERROR generating audio: {e}")
+        except Exception:
+            pass # Fails gracefully so the text still appears
             
         return jsonify({
             "translation": translation,

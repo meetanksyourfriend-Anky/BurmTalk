@@ -1,10 +1,7 @@
 from flask import Flask, render_template_string, request, jsonify
 import base64
-import os
-import sys
-import tempfile
-import subprocess
-import urllib.parse
+import asyncio
+import edge_tts
 
 app = Flask(__name__)
 
@@ -105,22 +102,6 @@ HTML_TEMPLATE = """
             return text.charAt(0).toUpperCase() + text.slice(1);
         }
 
-        function extractLatin(obj) {
-            if (typeof obj === 'string') {
-                const str = obj.trim();
-                // Extract only if it has english letters, NO burmese letters, and isn't a language code
-                if (/[a-zA-Z]/.test(str) && !/[\u1000-\u109F]/.test(str) && !['my','en'].includes(str.toLowerCase())) {
-                    return str;
-                }
-            } else if (Array.isArray(obj)) {
-                for (let item of obj) {
-                    let res = extractLatin(item);
-                    if (res) return res;
-                }
-            }
-            return null;
-        }
-
         document.getElementById('translator-form').addEventListener('submit', async function(e) {
             e.preventDefault();
             const text = document.getElementById('english_text').value.trim();
@@ -140,27 +121,36 @@ HTML_TEMPLATE = """
             let finalPhonetics = "";
             
             const cleanText = text.toLowerCase().replace(/[.?!]/g, '').trim();
-            const safetyNet = { "hello": ["မင်္ဂလာပါ", "Min-ga-la-ba"], "thank you": ["ကျေးဇူးတင်ပါတယ်", "Kye-zu tin bar de"], "thanks": ["ကျေးဇူးတင်ပါတယ်", "Kye-zu tin bar de"], "goodbye": ["သွားပါဦးမယ်", "Thwa bar ou me"], "bye": ["သွားပါဦးမယ်", "Thwa bar ou me"] };
+            const safetyNet = { 
+                "hello": ["မင်္ဂလာပါ", "Min-ga-la-ba"], 
+                "thank you": ["ကျေးဇူးတင်ပါတယ်", "Kye-zu tin bar de"], 
+                "thanks": ["ကျေးဇူးတင်ပါတယ်", "Kye-zu tin bar de"], 
+                "goodbye": ["သွားပါဦးမယ်", "Thwa bar ou me"], 
+                "bye": ["သွားပါဦးမယ်", "Thwa bar ou me"] 
+            };
 
             try {
                 if (safetyNet[cleanText]) {
                     finalBurmese = safetyNet[cleanText][0];
                     finalPhonetics = safetyNet[cleanText][1];
                 } else {
-                    // Fetch 1: Translate English to Burmese
-                    const url1 = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=my&dt=t&q=${encodeURIComponent(text)}`;
-                    const res1 = await fetch(url1);
-                    const data1 = await res1.json();
+                    // Single-pass fetch: dt=t (translation) AND dt=rm (romanization)
+                    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=my&dt=t&dt=rm&q=${encodeURIComponent(text)}`;
+                    const res = await fetch(url);
+                    const data = await res.json();
                     
-                    if (data1 && data1[0]) {
-                        finalBurmese = data1[0][0][0];
-                        
-                        // Fetch 2: Isolate the phonetics by requesting the romanization of the Burmese text
-                        const url2 = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=my&tl=my&dt=rm&q=${encodeURIComponent(finalBurmese)}`;
-                        const res2 = await fetch(url2);
-                        const data2 = await res2.json();
-                        
-                        const rawPhonetics = extractLatin(data2[0]);
+                    if (data && data[0]) {
+                        let rawPhonetics = "";
+                        // Parse Google's complex array structure
+                        data[0].forEach(chunk => {
+                            if (chunk[0] !== null && typeof chunk[0] === 'string') {
+                                finalBurmese += chunk[0];
+                            }
+                            // Google places the romanization of the target language where chunk[0] is null and chunk[2] is a string
+                            if (chunk[0] === null && chunk[2] && typeof chunk[2] === 'string') {
+                                rawPhonetics += chunk[2];
+                            }
+                        });
                         finalPhonetics = smoothPhonetics(rawPhonetics);
                     } else {
                         throw new Error("Translation data missing");
@@ -183,9 +173,10 @@ HTML_TEMPLATE = """
                     const audioData = await audioRes.json();
                     if (audioData.audio_base64) {
                         audioBase64 = audioData.audio_base64;
+                        // Use correct MIME type for edge-tts
                         audioPlayer.src = "data:audio/mp3;base64," + audioBase64;
                         audioPlayer.style.display = 'block';
-                        audioPlayer.play().catch(e => console.log("Autoplay blocked."));
+                        audioPlayer.play().catch(e => console.log("Autoplay blocked, waiting for user interaction."));
                     }
                 }
 
@@ -195,7 +186,8 @@ HTML_TEMPLATE = """
                 };
 
             } catch (err) {
-                errorMsg.innerText = "Check your internet connection.";
+                console.error(err);
+                errorMsg.innerText = "Check your internet connection or try again.";
                 errorMsg.style.display = 'block';
             } finally {
                 btn.disabled = false; loading.style.display = 'none';
@@ -246,6 +238,15 @@ HTML_TEMPLATE = """
 </html>
 """
 
+# Native, in-memory async helper to generate audio without touching the filesystem
+async def _generate_audio_bytes(text):
+    communicate = edge_tts.Communicate(text, "my-MM-NilarNeural")
+    audio_data = bytearray()
+    async for chunk in communicate.stream():
+        if chunk["type"] == "audio":
+            audio_data.extend(chunk["data"])
+    return bytes(audio_data)
+
 @app.route("/", methods=["GET"])
 def index():
     return render_template_string(HTML_TEMPLATE)
@@ -257,26 +258,12 @@ def generate_audio():
     if not text.strip():
         return jsonify({"error": "No text"}), 400
 
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
-    temp_path = temp_file.name
-    temp_file.close()
-
     try:
-        # Thread-safe execution perfectly suited for Render's environment
-        subprocess.run(
-            [sys.executable, "-m", "edge_tts", "--voice", "my-MM-NilarNeural", "--text", text, "--write-media", temp_path], 
-            check=True
-        )
-        
-        with open(temp_path, "rb") as f:
-            audio_bytes = f.read()
-            
+        # Run the async edge_tts generator safely in a synchronous Flask worker thread
+        audio_bytes = asyncio.run(_generate_audio_bytes(text))
         return jsonify({"audio_base64": base64.b64encode(audio_bytes).decode('utf-8')})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-    finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080, threaded=True)
+    app.run(host="0.0.0.0", port=8080)

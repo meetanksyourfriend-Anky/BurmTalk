@@ -2,8 +2,13 @@ from flask import Flask, render_template_string, request, jsonify
 import base64
 import asyncio
 import edge_tts
+from concurrent.futures import ThreadPoolExecutor
+import traceback
 
 app = Flask(__name__)
+
+# Create a thread pool specifically to isolate the asyncio event loop from Gunicorn
+audio_executor = ThreadPoolExecutor(max_workers=3)
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -119,6 +124,7 @@ HTML_TEMPLATE = """
 
             let finalBurmese = "";
             let finalPhonetics = "";
+            let audioBase64 = null;
             
             const cleanText = text.toLowerCase().replace(/[.?!]/g, '').trim();
             const safetyNet = { 
@@ -141,12 +147,10 @@ HTML_TEMPLATE = """
                     
                     if (data && data[0]) {
                         let rawPhonetics = "";
-                        // Parse Google's complex array structure
                         data[0].forEach(chunk => {
                             if (chunk[0] !== null && typeof chunk[0] === 'string') {
                                 finalBurmese += chunk[0];
                             }
-                            // Google places the romanization of the target language where chunk[0] is null and chunk[2] is a string
                             if (chunk[0] === null && chunk[2] && typeof chunk[2] === 'string') {
                                 rawPhonetics += chunk[2];
                             }
@@ -161,23 +165,31 @@ HTML_TEMPLATE = """
                 document.getElementById('phonetics-text').innerText = finalPhonetics ? "🗣️ " + finalPhonetics : "";
                 output.style.display = 'block';
 
-                // Fetch 3: Generate Neural Audio safely via Render
-                const audioRes = await fetch('/generate_audio', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ text: finalBurmese })
-                });
-                
-                let audioBase64 = null;
-                if (audioRes.ok) {
-                    const audioData = await audioRes.json();
-                    if (audioData.audio_base64) {
-                        audioBase64 = audioData.audio_base64;
-                        // Use correct MIME type for edge-tts
-                        audioPlayer.src = "data:audio/mp3;base64," + audioBase64;
-                        audioPlayer.style.display = 'block';
-                        audioPlayer.play().catch(e => console.log("Autoplay blocked, waiting for user interaction."));
+                // Fetch 3: Generate Neural Audio safely via Render with error surfacing
+                try {
+                    const audioRes = await fetch('/generate_audio', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ text: finalBurmese })
+                    });
+                    
+                    if (audioRes.ok) {
+                        const audioData = await audioRes.json();
+                        if (audioData.audio_base64) {
+                            audioBase64 = audioData.audio_base64;
+                            audioPlayer.src = "data:audio/mp3;base64," + audioBase64;
+                            audioPlayer.style.display = 'block';
+                            audioPlayer.play().catch(e => console.log("Autoplay blocked, waiting for interaction."));
+                        }
+                    } else {
+                        // Expose the backend 500 error onto the UI
+                        const errData = await audioRes.json();
+                        console.error("Backend TTS Error:", errData.error);
+                        document.getElementById('phonetics-text').innerHTML += `<div style="color:#dc3545; font-size:14px; margin-top:8px; font-weight:bold;">⚠️ Audio Error: ${errData.error}</div>`;
                     }
+                } catch (audioErr) {
+                    console.error("Network Error:", audioErr);
+                    document.getElementById('phonetics-text').innerHTML += `<div style="color:#dc3545; font-size:14px; margin-top:8px; font-weight:bold;">⚠️ Failed to connect to audio server.</div>`;
                 }
 
                 currentTranslationData = {
@@ -238,7 +250,7 @@ HTML_TEMPLATE = """
 </html>
 """
 
-# Native, in-memory async helper to generate audio without touching the filesystem
+# Native, in-memory async helper
 async def _generate_audio_bytes(text):
     communicate = edge_tts.Communicate(text, "my-MM-NilarNeural")
     audio_data = bytearray()
@@ -246,6 +258,15 @@ async def _generate_audio_bytes(text):
         if chunk["type"] == "audio":
             audio_data.extend(chunk["data"])
     return bytes(audio_data)
+
+def run_edge_tts_sync(text):
+    # Force a brand new, clean event loop for this specific background thread
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(_generate_audio_bytes(text))
+    finally:
+        loop.close()
 
 @app.route("/", methods=["GET"])
 def index():
@@ -256,13 +277,19 @@ def generate_audio():
     data = request.get_json()
     text = data.get("text", "")
     if not text.strip():
-        return jsonify({"error": "No text"}), 400
+        return jsonify({"error": "No text provided"}), 400
 
     try:
-        # Run the async edge_tts generator safely in a synchronous Flask worker thread
-        audio_bytes = asyncio.run(_generate_audio_bytes(text))
+        # Dispatch the TTS generation to the isolated thread pool with a 15-second timeout
+        future = audio_executor.submit(run_edge_tts_sync, text)
+        audio_bytes = future.result(timeout=15)
+        
+        if not audio_bytes:
+            return jsonify({"error": "edge-tts returned an empty audio payload."}), 500
+            
         return jsonify({"audio_base64": base64.b64encode(audio_bytes).decode('utf-8')})
     except Exception as e:
+        traceback.print_exc() # Prints the full stack trace to your Render logs
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":

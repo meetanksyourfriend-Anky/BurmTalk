@@ -252,7 +252,8 @@ HTML_TEMPLATE = """
 
 # Native, in-memory async helper
 async def _generate_audio_bytes(text):
-    communicate = edge_tts.Communicate(text, "my-MM-NilarNeural")
+    # Reduced the speed by 15% and slightly lowered the pitch to soften the robotic tone
+    communicate = edge_tts.Communicate(text, "my-MM-NilarNeural", rate="-15%", pitch="-5Hz")
     audio_data = bytearray()
     async for chunk in communicate.stream():
         if chunk["type"] == "audio":
